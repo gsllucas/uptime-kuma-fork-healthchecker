@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# DEPRECATED: This script is no longer needed when using UPTIME_KUMA_AUTO_DISCOVER=true.
+# The container auto-discovers running Docker containers via the mounted Docker socket.
+#
+# This script is kept as a fallback for manual JSON generation. Use it to produce
+# the value for UPTIME_KUMA_MONITORS if you prefer explicit monitor configuration:
+#
+#   ./generate-monitors.sh
+#   # Copy the printed JSON and pass it as:
+#   docker run -e UPTIME_KUMA_MONITORS='<paste here>' ...
+#
+# Or just run with auto-discovery (recommended):
+#   docker run -v /var/run/docker.sock:/var/run/docker.sock:ro \
+#              -e UPTIME_KUMA_AUTO_DISCOVER=true ...
 set -euo pipefail
 
 COMPOSE_FILE="$(dirname "$0")/compose.yaml"

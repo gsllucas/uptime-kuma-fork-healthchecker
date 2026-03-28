@@ -6,16 +6,14 @@ services:
     network_mode: host
     volumes:
       - uptime-kuma-data:/app/data
-
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
-      UPTIME_KUMA_MONITORS: |
-        [
-            {"name": "service1", "url": "http://localhost:3011/health", "interval": 20, "maxretries": 2},
-            {"name": "service2", "url": "http://localhost:3012/health", "interval": 20, "maxretries": 2},
-            {"name": "video-api-nginx", "url": "http://localhost:3973/health", "interval": 20, "maxretries": 2},
-            {"name": "video-api", "url": "http://localhost:3973/health", "interval": 20, "maxretries": 2},
-            {"name": "video-mongo", "url": "http://localhost:27019/health", "interval": 20, "maxretries": 2}
-          ]
+      UPTIME_KUMA_AUTO_DISCOVER: "true"
+      # Or pass monitors manually instead of auto-discover:
+      # UPTIME_KUMA_MONITORS: |
+      #   [
+      #     {"name": "My API", "url": "http://localhost:3000/health", "interval": 20, "maxretries": 2}
+      #   ]
 
 volumes:
   uptime-kuma-data:

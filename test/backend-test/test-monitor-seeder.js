@@ -24,9 +24,11 @@ async function createUser() {
 describe("seedMonitorsFromEnv()", () => {
     let db;
     let originalEnv;
+    let originalAutoDiscover;
 
     beforeEach(async () => {
         originalEnv = process.env.UPTIME_KUMA_MONITORS;
+        originalAutoDiscover = process.env.UPTIME_KUMA_AUTO_DISCOVER;
         db = new TestDB(path.join(__dirname, "../../data/test-seeder-" + Date.now()));
         await db.create();
     });
@@ -36,6 +38,11 @@ describe("seedMonitorsFromEnv()", () => {
             delete process.env.UPTIME_KUMA_MONITORS;
         } else {
             process.env.UPTIME_KUMA_MONITORS = originalEnv;
+        }
+        if (originalAutoDiscover === undefined) {
+            delete process.env.UPTIME_KUMA_AUTO_DISCOVER;
+        } else {
+            process.env.UPTIME_KUMA_AUTO_DISCOVER = originalAutoDiscover;
         }
         await db.destroy();
     });
@@ -172,5 +179,94 @@ describe("seedMonitorsFromEnv()", () => {
 
         const monitor = await R.findOne("monitor", " url = ? ", [ "https://a.example.com" ]);
         assert.strictEqual(monitor.user_id, user.id);
+    });
+
+    // ─── Auto-discover tests ───────────────────────────────────────────────────
+
+    test("auto-discover: seeds monitors from discovered containers", async () => {
+        delete process.env.UPTIME_KUMA_MONITORS;
+        process.env.UPTIME_KUMA_AUTO_DISCOVER = "true";
+        await createUser();
+        const server = makeServer();
+
+        const fakeDiscover = async () => [
+            { name: "api", url: "http://localhost:3000/", interval: 20, maxretries: 2 },
+            { name: "web", url: "http://localhost:8080/", interval: 20, maxretries: 2 },
+        ];
+
+        await seedMonitorsFromEnv(mockIo, server, noopStart, fakeDiscover);
+
+        const monitors = await R.findAll("monitor");
+        assert.strictEqual(monitors.length, 2);
+        assert.ok(monitors.some((m) => m.name === "api" && m.url === "http://localhost:3000/"));
+        assert.ok(monitors.some((m) => m.name === "web" && m.url === "http://localhost:8080/"));
+    });
+
+    test("auto-discover: does nothing when no containers discovered", async () => {
+        delete process.env.UPTIME_KUMA_MONITORS;
+        process.env.UPTIME_KUMA_AUTO_DISCOVER = "true";
+        await createUser();
+
+        const fakeDiscover = async () => [];
+
+        await seedMonitorsFromEnv(mockIo, makeServer(), noopStart, fakeDiscover);
+
+        const monitors = await R.findAll("monitor");
+        assert.strictEqual(monitors.length, 0);
+    });
+
+    test("auto-discover: does nothing when Docker socket is unavailable", async () => {
+        delete process.env.UPTIME_KUMA_MONITORS;
+        process.env.UPTIME_KUMA_AUTO_DISCOVER = "true";
+        await createUser();
+
+        const failingDiscover = async () => {
+            throw new Error("Docker socket not accessible at /var/run/docker.sock: ENOENT");
+        };
+
+        await assert.doesNotReject(
+            () => seedMonitorsFromEnv(mockIo, makeServer(), noopStart, failingDiscover),
+            "seeder should not throw when Docker socket is unavailable"
+        );
+
+        const monitors = await R.findAll("monitor");
+        assert.strictEqual(monitors.length, 0);
+    });
+
+    test("auto-discover: manual UPTIME_KUMA_MONITORS takes precedence", async () => {
+        process.env.UPTIME_KUMA_MONITORS = JSON.stringify([
+            { name: "Manual", url: "https://manual.example.com" },
+        ]);
+        process.env.UPTIME_KUMA_AUTO_DISCOVER = "true";
+        await createUser();
+
+        let discoverCalled = false;
+        const fakeDiscover = async () => {
+            discoverCalled = true;
+            return [ { name: "discovered", url: "http://localhost:9999/" } ];
+        };
+
+        await seedMonitorsFromEnv(mockIo, makeServer(), noopStart, fakeDiscover);
+
+        assert.strictEqual(discoverCalled, false, "auto-discover should not run when manual env var is set");
+        const monitors = await R.findAll("monitor");
+        assert.strictEqual(monitors.length, 1);
+        assert.strictEqual(monitors[0].name, "Manual");
+    });
+
+    test("auto-discover: is idempotent — skips duplicate URLs", async () => {
+        delete process.env.UPTIME_KUMA_MONITORS;
+        process.env.UPTIME_KUMA_AUTO_DISCOVER = "true";
+        await createUser();
+
+        const fakeDiscover = async () => [
+            { name: "api", url: "http://localhost:3000/", interval: 20, maxretries: 2 },
+        ];
+
+        await seedMonitorsFromEnv(mockIo, makeServer(), noopStart, fakeDiscover);
+        await seedMonitorsFromEnv(mockIo, makeServer(), noopStart, fakeDiscover);
+
+        const monitors = await R.find("monitor", " url = ? ", [ "http://localhost:3000/" ]);
+        assert.strictEqual(monitors.length, 1, "monitor should not be duplicated on re-discovery");
     });
 });

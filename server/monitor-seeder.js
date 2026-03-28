@@ -1,5 +1,7 @@
 const { R } = require("redbean-node");
 const { log } = require("../src/util");
+const http = require("http");
+const fs = require("fs");
 
 const DEFAULTS = {
     type: "http",
@@ -12,36 +14,135 @@ const DEFAULTS = {
     method: "GET",
 };
 
+const DOCKER_SOCKET = "/var/run/docker.sock";
+
 /**
- * Seed monitors from the UPTIME_KUMA_MONITORS environment variable.
+ * Make an HTTP GET request to the Docker Engine API via Unix socket.
  *
- * The env var must be a JSON array of monitor objects. Each object requires
- * at minimum a `name` and `url`. All other fields are optional and fall back
- * to sensible defaults (see DEFAULTS above).
+ * @param {string} endpoint API path, e.g. "/containers/json"
+ * @param {string} socketPath Path to Docker socket (injectable for testing)
+ * @returns {Promise<object>} Parsed JSON response
+ */
+async function queryDockerSocket(endpoint, socketPath = DOCKER_SOCKET) {
+    return new Promise((resolve, reject) => {
+        const req = http.get({
+            socketPath,
+            path: endpoint,
+            method: "GET",
+        }, (res) => {
+            let data = "";
+            res.on("data", (chunk) => { data += chunk; });
+            res.on("end", () => {
+                try {
+                    resolve(JSON.parse(data));
+                } catch (e) {
+                    reject(new Error("Failed to parse Docker API response: " + e.message));
+                }
+            });
+        });
+        req.setTimeout(5000, () => {
+            req.destroy(new Error("Docker socket request timed out"));
+        });
+        req.on("error", reject);
+    });
+}
+
+/**
+ * Discover running local Docker containers via the Docker socket and return
+ * monitor spec objects for each one that has a host-mapped port.
  *
- * Seeding is idempotent: if a monitor with the same URL already exists for
- * the user, it is skipped. Monitors added through the UI are never affected.
+ * Self-exclusion: skips the container whose ID starts with process.env.HOSTNAME
+ * (Docker sets HOSTNAME to the short container ID by default).
  *
- * Example value:
- *   UPTIME_KUMA_MONITORS='[{"name":"My API","url":"https://api.example.com"}]'
+ * @param {string} urlTemplate URL template with {port} placeholder
+ * @param {string} socketPath Path to Docker socket (injectable for testing)
+ * @param {Function|null} queryFn Optional override for queryDockerSocket (for testing)
+ * @returns {Promise<Array>} Array of monitor spec objects
+ */
+async function discoverDockerContainers(
+    urlTemplate = "http://localhost:{port}/",
+    socketPath = DOCKER_SOCKET,
+    queryFn = null
+) {
+    const query = queryFn ?? ((ep) => queryDockerSocket(ep, socketPath));
+
+    // Check socket is accessible before trying to connect
+    try {
+        fs.accessSync(socketPath, fs.constants.R_OK);
+    } catch (e) {
+        throw new Error(`Docker socket not accessible at ${socketPath}: ${e.message}`);
+    }
+
+    const containers = await query("/containers/json");
+    const selfHostname = process.env.HOSTNAME || "";
+    const specs = [];
+
+    for (const container of containers) {
+        // Exclude self
+        if (selfHostname && container.Id && container.Id.startsWith(selfHostname)) {
+            continue;
+        }
+
+        // Find first host-mapped port
+        const hostPort = (container.Ports || [])
+            .filter((p) => p.PublicPort)
+            .map((p) => p.PublicPort)[0];
+
+        if (!hostPort) {
+            continue;
+        }
+
+        // Container name has a leading slash, strip it
+        const name = (container.Names?.[0] || container.Id).replace(/^\//, "");
+        const url = urlTemplate.replace("{port}", hostPort);
+
+        specs.push({ name, url, interval: 20, maxretries: 2 });
+    }
+
+    return specs;
+}
+
+/**
+ * Seed monitors from environment configuration.
+ *
+ * Two modes (manual takes precedence):
+ *   1. Manual:       UPTIME_KUMA_MONITORS='[{...}]' — explicit JSON array
+ *   2. Auto-discover: UPTIME_KUMA_AUTO_DISCOVER=true — query Docker socket
+ *
+ * Seeding is idempotent: monitors with the same URL are skipped.
+ * Monitors added through the UI are never affected.
  *
  * @param {import("socket.io").Server} io Socket.io server instance
  * @param {object} server UptimeKumaServer instance (exposes monitorList)
- * @param {Function|null} startFn Optional override for starting a monitor — defaults to bean.start(io).
- *                                 Inject a no-op in tests to avoid real HTTP check loops.
+ * @param {Function|null} startFn Optional override for starting a monitor
+ * @param {Function|null} discoverFn Optional override for discoverDockerContainers (for testing)
  * @returns {Promise<void>}
  */
-async function seedMonitorsFromEnv(io, server, startFn = null) {
-    const raw = process.env.UPTIME_KUMA_MONITORS;
-    if (!raw) {
-        return;
-    }
-
+async function seedMonitorsFromEnv(io, server, startFn = null, discoverFn = null) {
     let specs;
-    try {
-        specs = JSON.parse(raw);
-    } catch (e) {
-        log.error("seeder", "UPTIME_KUMA_MONITORS is not valid JSON: " + e.message);
+
+    const raw = process.env.UPTIME_KUMA_MONITORS;
+
+    if (raw) {
+        // Manual mode
+        try {
+            specs = JSON.parse(raw);
+        } catch (e) {
+            log.error("seeder", "UPTIME_KUMA_MONITORS is not valid JSON: " + e.message);
+            return;
+        }
+    } else if (process.env.UPTIME_KUMA_AUTO_DISCOVER === "true") {
+        // Auto-discover mode
+        const urlTemplate = process.env.UPTIME_KUMA_MONITOR_URL_TEMPLATE || "http://localhost:{port}/";
+        const discover = discoverFn ?? discoverDockerContainers;
+        try {
+            specs = await discover(urlTemplate);
+            log.info("seeder", `Auto-discovered ${specs.length} container(s) via Docker socket`);
+        } catch (e) {
+            log.warn("seeder", "Docker auto-discovery failed: " + e.message);
+            return;
+        }
+    } else {
         return;
     }
 
@@ -80,4 +181,4 @@ async function seedMonitorsFromEnv(io, server, startFn = null) {
     }
 }
 
-module.exports = { seedMonitorsFromEnv };
+module.exports = { seedMonitorsFromEnv, discoverDockerContainers, queryDockerSocket };
