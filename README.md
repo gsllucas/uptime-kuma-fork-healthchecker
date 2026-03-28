@@ -108,7 +108,7 @@ pm2 startup && pm2 save
 
 ### Pre-seeding Monitors via Environment Variable
 
-You can declare monitors directly in your `compose.yml` using the `UPTIME_KUMA_MONITORS` environment variable, so they are automatically created at startup without any UI interaction.
+You can declare monitors directly in your `compose.yaml` using the `UPTIME_KUMA_MONITORS` environment variable, so they are automatically created at startup without any UI interaction.
 
 ```yaml
 services:

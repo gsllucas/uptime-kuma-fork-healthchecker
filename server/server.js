@@ -709,6 +709,8 @@ let needSetup = false;
                     msg: "successAdded",
                     msgi18n: true,
                 });
+
+                await seedMonitorsFromEnv(io, server);
             } catch (e) {
                 callback({
                     ok: false,

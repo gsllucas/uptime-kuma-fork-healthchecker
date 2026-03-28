@@ -1,9 +1,21 @@
 services:
   uptime-kuma:
-    image: louislam/uptime-kuma:2
-    restart: unless-stopped
+    build: .
+    container_name: uptime-kuma
+    restart: always
+    network_mode: host
     volumes:
-      - ./data:/app/data
-    ports:
-      # <Host Port>:<Container Port>
-      - "3001:3001"
+      - uptime-kuma-data:/app/data
+
+    environment:
+      UPTIME_KUMA_MONITORS: |
+        [
+            {"name": "service1", "url": "http://localhost:3011/health", "interval": 20, "maxretries": 2},
+            {"name": "service2", "url": "http://localhost:3012/health", "interval": 20, "maxretries": 2},
+            {"name": "video-api-nginx", "url": "http://localhost:3973/health", "interval": 20, "maxretries": 2},
+            {"name": "video-api", "url": "http://localhost:3973/health", "interval": 20, "maxretries": 2},
+            {"name": "video-mongo", "url": "http://localhost:27019/health", "interval": 20, "maxretries": 2}
+          ]
+
+volumes:
+  uptime-kuma-data:
