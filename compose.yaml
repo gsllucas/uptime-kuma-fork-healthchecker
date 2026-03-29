@@ -17,7 +17,7 @@ services:
     environment:
       UPTIME_KUMA_AUTO_DISCOVER: "true"
       UV_THREADPOOL_SIZE: "4"
-      NODE_OPTIONS: "--max-old-space-size=256 --stack-size=1048576"
+      NODE_OPTIONS: "--max-old-space-size=256"
       # Or pass monitors manually instead of auto-discover:
       # UPTIME_KUMA_MONITORS: |
       #   [
